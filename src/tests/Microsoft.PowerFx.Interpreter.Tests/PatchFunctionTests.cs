@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.PowerFx.Core.App.ErrorContainers;
@@ -25,7 +26,10 @@ namespace Microsoft.PowerFx.Interpreter.Tests
 {
     public class PatchFunctionTests : PowerFxTest
     {
-        private readonly ParserOptions _opts = new ParserOptions { AllowsSideEffects = true };
+        private readonly ParserOptions _opts = new ParserOptions
+        {
+            AllowsSideEffects = true
+        };
 
         [Theory]
         [InlineData(typeof(PatchFunction))]
@@ -33,9 +37,7 @@ namespace Microsoft.PowerFx.Interpreter.Tests
         {
             var expressionError = new ExpressionError()
             {
-                Kind = ErrorKind.ReadOnlyValue,
-                Severity = ErrorSeverity.Critical,
-                Message = "Something went wrong"
+                Kind = ErrorKind.ReadOnlyValue, Severity = ErrorSeverity.Critical, Message = "Something went wrong"
             };
 
             FormulaValue[] args = new[]
@@ -48,5 +50,80 @@ namespace Microsoft.PowerFx.Interpreter.Tests
 
             Assert.IsType<ErrorValue>(result);
         }
+
+        [Fact]
+        public async Task PatchFunction_LazyTable()
+        {
+            // how we use lazy types in PAD
+            var rt = new CustomTypeRecordType(typeof(CustomPadType).FullName);
+            rt.SetTypeProperties(new Dictionary<string, FormulaType>
+            {
+                ["Prop1"] = FormulaType.String, ["Prop2"] = FormulaType.String
+            });
+
+            var customTypeAsTable = rt.ToTable();
+
+            PowerFxConfig config = new PowerFxConfig(Features.PowerFxV1);
+            config.SymbolTable.EnableMutationFunctions();
+            RecalcEngine engine = new RecalcEngine(config);
+
+            var st = new SymbolTable();
+            st.AddVariable("NewVar", customTypeAsTable, mutable: true);
+            var checkResult = engine.Check("Patch(NewVar, Index(NewVar, 1), {Prop2: \"haha\"})", symbolTable: st);
+
+            Assert.True(checkResult.IsSuccess);
+        }
+
+        public class CustomTypeRecordType : RecordType
+        {
+            public CustomTypeRecordType(string typeName)
+            {
+                TypeName = typeName;
+            }
+
+            public string TypeName { get; set; }
+
+            private readonly IDictionary<string, FormulaType> _fieldTypes = new Dictionary<string, FormulaType>();
+
+            public void SetTypeProperties(IDictionary<string, FormulaType> typeProperties)
+            {
+                foreach (var kvp in typeProperties)
+                {
+                    _fieldTypes[kvp.Key] = kvp.Value;
+                    Add(kvp.Key, kvp.Value);
+                }
+            }
+
+            public override IEnumerable<string> FieldNames => _fieldTypes.Select(field => field.Key);
+
+            public override RecordType Add(NamedFormulaType field)
+            {
+                _fieldTypes[field.Name] = field.Type;
+                return this;
+            }
+
+            public override bool TryGetFieldType(string name, out FormulaType type)
+            {
+                return _fieldTypes.TryGetValue(name, out type);
+            }
+
+            public override bool Equals(object other)
+            {
+                return other is CustomTypeRecordType otherType &&
+                       TypeName.Equals(otherType.TypeName, StringComparison.InvariantCultureIgnoreCase);
+            }
+
+            public override int GetHashCode()
+            {
+                return TypeName.GetHashCode();
+            }
+        }
+    }
+
+    public class CustomPadType
+    {
+        public string Prop1 { get; set; }
+
+        public string Prop2 { get; set; }
     }
 }
